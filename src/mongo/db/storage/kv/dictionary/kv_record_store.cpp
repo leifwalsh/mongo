@@ -121,7 +121,7 @@ namespace mongo {
         }
     }
 
-#define invariantKVOK(s, expr) massert(28614, expr, s.isOK())
+#define invariantKVOK(s, expr) massert(28627, expr, s.isOK())
 
     long long KVRecordStore::dataSize( OperationContext* txn ) const {
         if (_sizeStorer) {
@@ -205,7 +205,7 @@ namespace mongo {
     RecordData KVRecordStore::dataFor( OperationContext* txn, const RecordId& loc) const {
         RecordData rd;
         bool found = findRecord(txn, loc, &rd);
-        massert(28622, "Didn't find RecordId in record store", found);
+        massert(28630, "Didn't find RecordId in record store", found);
         return rd;
     }
 
