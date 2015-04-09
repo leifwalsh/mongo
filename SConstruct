@@ -344,9 +344,7 @@ add_option('variables-help',
            "Print the help text for SCons variables", 0, False)
 
 if darwin:
-    osx_version_choices = ['10.7', '10.8', '10.9', '10.10']
-    add_option("osx-version-min", "minimum OS X version to support", 1, True,
-               type = 'choice', default = osx_version_choices[0], choices = osx_version_choices)
+    add_option("osx-version-min", "minimum OS X version to support", 1, True)
 
 elif windows:
     win_version_min_choices = {
@@ -459,7 +457,7 @@ if buildDir[0] not in ['$', '#']:
 
 cacheDir = get_option('cache-dir').rstrip('/')
 if cacheDir[0] not in ['$', '#']:
-    if not os.path.isabs(cachdDIr):
+    if not os.path.isabs(cacheDir):
         print("Do not use relative paths with --cache-dir")
         Exit(1)
 
@@ -577,7 +575,7 @@ envDict = dict(BUILD_ROOT=buildDir,
                # changes to MCI.
                UNITTEST_LIST='$BUILD_ROOT/unittests.txt',
                PYSYSPLATFORM=os.sys.platform,
-               PCRE_VERSION='8.30',
+               PCRE_VERSION='8.36',
                CONFIGUREDIR=sconsDataDir.Dir('sconf_temp'),
                CONFIGURELOG=sconsDataDir.File('config.log'),
                INSTALL_DIR=installDir,
@@ -775,6 +773,7 @@ if has_option( "cpppath" ):
 
 env.Prepend( CPPDEFINES=[ "_SCONS" , 
                           "MONGO_EXPOSE_MACROS" ,
+                          "PCRE_STATIC",  # for pcre on Windows
                           "SUPPORT_UTF8" ],  # for pcre
 )
 
