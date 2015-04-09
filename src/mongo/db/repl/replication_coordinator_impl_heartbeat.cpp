@@ -33,7 +33,6 @@
 #include <algorithm>
 
 #include "mongo/base/status.h"
-#include "mongo/db/get_status_from_command_result.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/elect_cmd_runner.h"
 #include "mongo/db/repl/freshness_checker.h"
@@ -49,6 +48,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/get_status_from_command_result.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -126,7 +126,7 @@ namespace {
         const bool isUnauthorized = (responseStatus.code() == ErrorCodes::Unauthorized) ||
                                     (responseStatus.code() == ErrorCodes::AuthenticationFailed);
         const Date_t now = _replExecutor.now();
-        const OpTime lastApplied = getMyLastOptime();  // Locks and unlocks _mutex.
+        const Timestamp lastApplied = getMyLastOptime();  // Locks and unlocks _mutex.
         Milliseconds networkTime(0);
         StatusWith<ReplSetHeartbeatResponse> hbStatusResponse(hbResponse);
 
@@ -177,7 +177,7 @@ namespace {
     }
 
     void ReplicationCoordinatorImpl::_updateOpTimeFromHeartbeat_inlock(int targetIndex,
-                                                                       OpTime optime) {
+                                                                       Timestamp optime) {
         invariant(_selfIndex >= 0);
         invariant(targetIndex >= 0);
 

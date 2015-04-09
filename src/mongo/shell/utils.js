@@ -157,9 +157,7 @@ jsTestOptions = function(){
                               authPassword : TestData.keyFileData,
                               authMechanism : TestData.authMechanism,
                               adminUser : TestData.adminUser || "admin",
-                              adminPassword : TestData.adminPassword || "password",
-                              useSSL : TestData.useSSL,
-                              useX509 : TestData.useX509});
+                              adminPassword : TestData.adminPassword || "password"});
     }
     return _jsTestOptions;
 }
@@ -195,7 +193,7 @@ jsTest.randomize = function( seed ) {
 }
 
 jsTest.authenticate = function(conn) {
-    if (!jsTest.options().auth && !jsTest.options().keyFile && !jsTest.options().useX509) {
+    if (!jsTest.options().auth && !jsTest.options().keyFile) {
         conn.authenticated = true;
         return true;
     }
@@ -360,6 +358,11 @@ if (typeof(_useWriteCommandsDefault) == 'undefined') {
 if (typeof(_writeMode) == 'undefined') {
     // This is for cases when the v8 engine is used other than the mongo shell, like map reduce.
     _writeMode = function() { return "commands"; };
+};
+
+if (typeof(_readMode) == 'undefined') {
+    // This is for cases when the v8 engine is used other than the mongo shell, like map reduce.
+    _readMode = function() { return "compatibility"; };
 };
 
 shellPrintHelper = function (x) {
@@ -920,7 +923,7 @@ rs.help = function () {
     print("\trs.add(hostportstr)                        add a new member to the set with default attributes (disconnects)");
     print("\trs.add(membercfgobj)                       add a new member to the set with extra attributes (disconnects)");
     print("\trs.addArb(hostportstr)                     add a new member which is arbiterOnly:true (disconnects)");
-    print("\trs.stepDown([stepdownSecs, catchupSecs])   step down as primary (disconnects)");
+    print("\trs.stepDown([stepdownSecs, catchUpSecs])   step down as primary (disconnects)");
     print("\trs.syncFrom(hostportstr)                   make a secondary sync from the given member");
     print("\trs.freeze(secs)                            make a node ineligible to become primary for the time specified");
     print("\trs.remove(hostportstr)                     remove a host from the replica set (disconnects)");
@@ -991,6 +994,11 @@ rs.add = function (hostport, arb) {
         if (arb)
             cfg.arbiterOnly = true;
     }
+    else if (arb == true) {
+        throw Error("Expected first parameter to be a host-and-port string of arbiter, but got " +
+                    tojson(hostport));
+    }
+
     if (cfg._id == null){
         cfg._id = max+1;
     }
@@ -998,10 +1006,10 @@ rs.add = function (hostport, arb) {
     return this._runCmd({ replSetReconfig: c });
 }
 rs.syncFrom = function (host) { return db._adminCommand({replSetSyncFrom : host}); };
-rs.stepDown = function (stepdownSecs, catchupSecs) {
+rs.stepDown = function (stepdownSecs, catchUpSecs) {
     var cmdObj = {replSetStepDown: stepdownSecs === undefined ? 60 : stepdownSecs};
-    if (catchupSecs !== undefined) {
-        cmdObj['secondaryCatchUpPeriodSecs'] = catchupSecs;
+    if (catchUpSecs !== undefined) {
+        cmdObj['secondaryCatchUpPeriodSecs'] = catchUpSecs;
     }
     return db._adminCommand(cmdObj);
 };
@@ -1150,16 +1158,8 @@ help = shellHelper.help = function (x) {
         return;
     }
     else if (x == "test") {
-        print("\tstartMongodEmpty(args)        DELETES DATA DIR and then starts mongod");
+        print("\tMongoRunner.runMongod(args)   DELETES DATA DIR and then starts mongod");
         print("\t                              returns a connection to the new server");
-        print("\tstartMongodTest(port,dir,options)");
-        print("\t                              DELETES DATA DIR");
-        print("\t                              automatically picks port #s starting at 27000 and increasing");
-        print("\t                              or you can specify the port as the first arg");
-        print("\t                              dir is /data/db/<port>/ if not specified as the 2nd arg");
-        print("\t                              returns a connection to the new server");
-        print("\tresetDbpath(dirpathstr)       deletes everything under the dir specified including subdirs");
-        print("\tstopMongoProgram(port[, signal])");
         return;
     }
     else if (x == "") {

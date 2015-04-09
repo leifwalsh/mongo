@@ -48,17 +48,19 @@
 #include "mongo/db/auth/user_management_commands_parser.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/background.h"
-#include "mongo/db/clientcursor.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
+#include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/shutdown.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/global_environment_d.h"
+#include "mongo/db/service_context_d.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
@@ -66,16 +68,17 @@
 #include "mongo/db/json.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repair_database.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/db/repl/oplog.h"
-#include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/mmap_v1/dur_stats.h"
+#include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/d_state.h"
 #include "mongo/s/stale_exception.h"  // for SendStaleConfigException
@@ -200,7 +203,7 @@ namespace mongo {
                     // DB doesn't exist, so deem it a success.
                     return true;
                 }
-                Client::Context context(txn, dbname);
+                OldClientContext context(txn, dbname);
                 if (!fromRepl &&
                     !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                     return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -217,7 +220,7 @@ namespace mongo {
                 WriteUnitOfWork wunit(txn);
 
                 if (!fromRepl) {
-                    repl::logOp(txn, "c", (dbname + ".$cmd").c_str(), cmdObj);
+                    getGlobalServiceContext()->getOpObserver()->onDropDatabase(txn, dbname + ".$cmd");
                 }
 
                 wunit.commit();
@@ -287,7 +290,7 @@ namespace mongo {
             // TODO: SERVER-4328 Don't lock globally
             ScopedTransaction transaction(txn, MODE_X);
             Lock::GlobalWrite lk(txn->lockState());
-            Client::Context context(txn,  dbname );
+            OldClientContext context(txn,  dbname );
 
             log() << "repairDatabase " << dbname;
             std::vector<BSONObj> indexesInProg = stopIndexBuilds(txn, context.db(), cmdObj);
@@ -297,7 +300,7 @@ namespace mongo {
             e = cmdObj.getField( "backupOriginalFiles" );
             bool backupOriginalFiles = e.isBoolean() && e.boolean();
 
-            StorageEngine* engine = getGlobalEnvironment()->getGlobalStorageEngine();
+            StorageEngine* engine = getGlobalServiceContext()->getGlobalStorageEngine();
             Status status = repairDatabase(txn, engine, dbname, preserveClonedFilesOnFailure,
                                            backupOriginalFiles );
 
@@ -369,7 +372,7 @@ namespace mongo {
             // in the local database.
             ScopedTransaction transaction(txn, MODE_IX);
             Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);
-            Client::Context ctx(txn, dbname);
+            OldClientContext ctx(txn, dbname);
 
             BSONElement e = cmdObj.firstElement();
             result.append("was", ctx.db()->getProfilingLevel());
@@ -430,7 +433,7 @@ namespace mongo {
             //
             ScopedTransaction transaction(txn, MODE_IX);
             Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);
-            Client::Context ctx(txn, dbname);
+            OldClientContext ctx(txn, dbname);
 
             int was = _diaglog.setLevel( cmdObj.firstElement().numberInt() );
             _diaglog.flush();
@@ -505,7 +508,7 @@ namespace mongo {
                     errmsg = "ns not found";
                     return false;
                 }
-                Client::Context context(txn, nsToDrop);
+                OldClientContext context(txn, nsToDrop);
                 if (!fromRepl &&
                     !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                     return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -527,7 +530,9 @@ namespace mongo {
                 }
 
                 if ( !fromRepl ) {
-                    repl::logOp(txn, "c",(dbname + ".$cmd").c_str(), cmdObj);
+                    getGlobalServiceContext()->getOpObserver()->onDropCollection(
+                            txn,
+                            NamespaceString(nsToDrop));
                 }
                 wunit.commit();
             } MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "drop", nsToDrop);
@@ -604,7 +609,7 @@ namespace mongo {
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
                 ScopedTransaction transaction(txn, MODE_IX);
                 Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);
-                Client::Context ctx(txn, ns);
+                OldClientContext ctx(txn, ns);
                 if (!fromRepl &&
                     !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                     return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -1053,7 +1058,7 @@ namespace mongo {
                 return false;
             }
 
-            Client::Context ctx(txn,  ns);
+            OldClientContext ctx(txn,  ns);
             if (!fromRepl &&
                 !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                 return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -1067,6 +1072,9 @@ namespace mongo {
             BSONForEach( e, jsobj ) {
                 if ( str::equals( "collMod", e.fieldName() ) ) {
                     // no-op
+                }
+                else if ( str::startsWith( e.fieldName(), "$" ) ) {
+                    // no-op: ignore top-level fields prefixed with $. They are for the command processor.
                 }
                 else if ( LiteParsedQuery::cmdOptionMaxTimeMS == e.fieldNameStringData() ) {
                     // no-op
@@ -1166,7 +1174,9 @@ namespace mongo {
             }
 
             if (!fromRepl) {
-                repl::logOp(txn, "c",(dbname + ".$cmd").c_str(), jsobj);
+                getGlobalServiceContext()->getOpObserver()->onCollMod(txn,
+                                                                   (dbname + ".$cmd").c_str(),
+                                                                   jsobj);
             }
 
             wunit.commit();
@@ -1215,7 +1225,7 @@ namespace mongo {
 
             const string ns = parseNs(dbname, jsobj);
 
-            // TODO: Client::Context legacy, needs to be removed
+            // TODO: OldClientContext legacy, needs to be removed
             txn->getCurOp()->ensureStarted();
             txn->getCurOp()->setNS(dbname);
 
@@ -1245,7 +1255,7 @@ namespace mongo {
                 result.appendNumber("fileSize", 0);
             }
             else {
-                // TODO: Client::Context legacy, needs to be removed
+                // TODO: OldClientContext legacy, needs to be removed
                 txn->getCurOp()->enter(dbname.c_str(), db->getProfilingLevel());
 
                 db->getStats(txn, &result, scale);
@@ -1387,9 +1397,9 @@ namespace mongo {
     };
 
     namespace {
-        void appendGLEHelperData(BSONObjBuilder& bob, const OpTime& opTime, const OID& oid) {
+        void appendGLEHelperData(BSONObjBuilder& bob, const Timestamp& opTime, const OID& oid) {
             BSONObjBuilder subobj(bob.subobjStart(kGLEStatsFieldName));
-            subobj.appendTimestamp(kGLEStatsLastOpTimeFieldName, opTime.asDate());
+            subobj.append(kGLEStatsLastOpTimeFieldName, opTime);
             subobj.appendOID(kGLEStatsElectionIdFieldName, const_cast<OID*>(&oid));
             subobj.done();
         }
@@ -1469,7 +1479,12 @@ namespace mongo {
 
         if ( ! canRunHere ) {
             result.append( "note" , "from execCommand" );
-            appendCommandStatus(result, false, "not master");
+            if ( c->slaveOverrideOk() ) {
+                appendCommandStatus(result, false, "not master and slaveOk=false");
+            }
+            else {
+                appendCommandStatus(result, false, "not master");
+            }
             return;
         }
 
@@ -1540,11 +1555,13 @@ namespace mongo {
         // For commands from mongos, append some info to help getLastError(w) work.
         if (replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
                 shardingState.enabled()) {
-            appendGLEHelperData(result, txn->getClient()->getLastOp(), replCoord->getElectionId());
+            appendGLEHelperData(
+                    result,
+                    repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
+                    replCoord->getElectionId());
         }
         return;
     }
-
 
     /* TODO make these all command objects -- legacy stuff here
 
@@ -1619,6 +1636,31 @@ namespace mongo {
         BSONObj x = anObjBuilder.done();
         b.appendBuf(x.objdata(), x.objsize());
 
+        return true;
+    }
+
+    bool runCommands(OperationContext* txn,
+                     const char* ns,
+                     BSONObj& jsobj,
+                     CurOp& curop,
+                     BufBuilder& b,
+                     BSONObjBuilder& anObjBuilder,
+                     bool fromRepl,
+                     int queryOptions) {
+        try {
+            return _runCommands(txn, ns, jsobj, b, anObjBuilder, fromRepl, queryOptions);
+        }
+        catch (const SendStaleConfigException&){
+            throw;
+        }
+        catch (const AssertionException& e) {
+            verify( e.getCode() != SendStaleConfigCode && e.getCode() != RecvStaleConfigCode );
+
+            Command::appendCommandStatus(anObjBuilder, e.toStatus());
+            curop.debug().exceptionInfo = e.getInfo();
+        }
+        BSONObj x = anObjBuilder.done();
+        b.appendBuf(x.objdata(), x.objsize());
         return true;
     }
 

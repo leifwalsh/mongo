@@ -42,11 +42,12 @@
 # include <arpa/inet.h>
 # include <errno.h>
 # include <netdb.h>
-# if defined(__openbsd__)
+# if defined(__OpenBSD__)
 #  include <sys/uio.h>
 # endif
 #endif
 
+#include "mongo/config.h"
 #include "mongo/db/server_options.h"
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/value.h"
@@ -357,8 +358,6 @@ namespace mongo {
         return false;        
     }
 
-    SockAddr unknownAddress( "0.0.0.0", 0 );
-
     string makeUnixSockPath(int port) {
         return mongoutils::str::stream() << serverGlobalParams.socket << "/mongodb-" << port
                                          << ".sock";
@@ -475,7 +474,7 @@ namespace mongo {
         _bytesOut = 0;
         _bytesIn = 0;
         _awaitingHandshake = true;
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
         _sslManager = 0;
 #endif
     }
@@ -493,7 +492,7 @@ namespace mongo {
         }
     }
 
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
     bool Socket::secure(SSLManagerInterface* mgr, const std::string& remoteHost) {
         fassert(16503, mgr);
         if ( _fd < 0 ) { 
@@ -612,7 +611,7 @@ namespace mongo {
 
     // throws if SSL_write or send fails 
     int Socket::_send( const char * data , int len, const char * context ) {
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
         if ( _sslConnection.get() ) {
             return _sslManager->SSL_write( _sslConnection.get() , data , len );
         }
@@ -664,7 +663,7 @@ namespace mongo {
      */
     void Socket::send( const vector< pair< char *, int > > &data, const char *context ) {
 
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
         if ( _sslConnection.get() ) {
             _send( data , context );
             return;
@@ -768,7 +767,7 @@ namespace mongo {
 
     // throws if SSL_read fails or recv returns an error
     int Socket::_recv( char *buf, int max ) {
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
         if ( _sslConnection.get() ){
             return _sslManager->SSL_read( _sslConnection.get() , buf , max );
         }

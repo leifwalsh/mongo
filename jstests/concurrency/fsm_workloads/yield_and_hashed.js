@@ -5,9 +5,6 @@
  *
  * Intersperse queries which use the AND_HASH stage with updates and deletes of documents they may
  * match.
- * This test workload is blacklisted until SERVER-17119 is resolved. Updates during the AND_HASHED
- * stage can cause a verify to fail in WiredTiger since it doesn't expect to see the same doc
- * twice during the phase.
  */
 load('jstests/concurrency/fsm_libs/extend_workload.js'); // for extendWorkload
 load('jstests/concurrency/fsm_workloads/yield_rooted_or.js'); // for $config
@@ -33,7 +30,14 @@ var $config = extendWorkload($config, function($config, $super) {
                                           endKeyInclusive: true, direction: 1 } } };
 
         var andix1ix2 = { andHash: { args: { nodes: [ixscan1, ixscan2] } } };
-        var res = db.runCommand({ stageDebug: { plan: andix1ix2, collection: collName } });
+
+        // On non-MMAP storage engines, index intersection plans will always re-filter
+        // the docs to make sure we don't get any spurious matches.
+        var fetch = { fetch: { filter: { c: { $lte: nMatches },
+                                         d: { $gte: (this.nDocs - nMatches) } },
+                               args: { node: andix1ix2 } } };
+
+        var res = db.runCommand({ stageDebug: { plan: fetch, collection: collName } });
         assertAlways.commandWorked(res);
         for (var i = 0; i < res.results.length; i++) {
             var result = res.results[i];

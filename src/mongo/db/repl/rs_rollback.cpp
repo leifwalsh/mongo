@@ -40,6 +40,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/cloner.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/ops/delete.h"
@@ -145,7 +146,7 @@ namespace {
 
         set<string> collectionsToResync;
 
-        OpTime commonPoint;
+        Timestamp commonPoint;
         RecordId commonPointOurDiskloc;
 
         int rbid; // remote server's current rollback sequence #
@@ -259,12 +260,12 @@ namespace {
     void syncRollbackFindCommonPoint(OperationContext* txn, 
                                      DBClientConnection* them, 
                                      FixUpInfo& fixUpInfo) {
-        Client::Context ctx(txn, rsoplog);
+        OldClientContext ctx(txn, rsOplogName);
 
         boost::scoped_ptr<PlanExecutor> exec(
                 InternalPlanner::collectionScan(txn,
-                                                rsoplog,
-                                                ctx.db()->getCollection(rsoplog),
+                                                rsOplogName,
+                                                ctx.db()->getCollection(rsOplogName),
                                                 InternalPlanner::BACKWARD));
 
         BSONObj ourObj;
@@ -277,17 +278,17 @@ namespace {
         const Query query = Query().sort(reverseNaturalObj);
         const BSONObj fields = BSON("ts" << 1 << "h" << 1);
 
-        //auto_ptr<DBClientCursor> u = us->query(rsoplog, query, 0, 0, &fields, 0, 0);
+        //auto_ptr<DBClientCursor> u = us->query(rsOplogName, query, 0, 0, &fields, 0, 0);
 
         fixUpInfo.rbid = getRBID(them);
-        auto_ptr<DBClientCursor> oplogCursor = them->query(rsoplog, query, 0, 0, &fields, 0, 0);
+        auto_ptr<DBClientCursor> oplogCursor = them->query(rsOplogName, query, 0, 0, &fields, 0, 0);
 
         if (oplogCursor.get() == NULL || !oplogCursor->more())
             throw RSFatalException("remote oplog empty or unreadable");
 
-        OpTime ourTime = ourObj["ts"]._opTime();
+        Timestamp ourTime = ourObj["ts"].timestamp();
         BSONObj theirObj = oplogCursor->nextSafe();
-        OpTime theirTime = theirObj["ts"]._opTime();
+        Timestamp theirTime = theirObj["ts"].timestamp();
 
         long long diff = static_cast<long long>(ourTime.getSecs())
                                - static_cast<long long>(theirTime.getSecs());
@@ -327,7 +328,7 @@ namespace {
                     throw RSFatalException("RS100 reached beginning of remote oplog [2]");
                 }
                 theirObj = oplogCursor->nextSafe();
-                theirTime = theirObj["ts"]._opTime();
+                theirTime = theirObj["ts"].timestamp();
 
                 if (PlanExecutor::ADVANCED != exec->getNext(&ourObj, &ourLoc)) {
                     severe() << "rollback error RS101 reached beginning of local oplog";
@@ -336,7 +337,7 @@ namespace {
                     log() << "  ourTime:   " << ourTime.toStringLong();
                     throw RSFatalException("RS101 reached beginning of local oplog [1]");
                 }
-                ourTime = ourObj["ts"]._opTime();
+                ourTime = ourObj["ts"].timestamp();
             }
             else if (theirTime > ourTime) {
                 if (!oplogCursor->more()) {
@@ -348,7 +349,7 @@ namespace {
                     throw RSFatalException("RS100 reached beginning of remote oplog [1]");
                 }
                 theirObj = oplogCursor->nextSafe();
-                theirTime = theirObj["ts"]._opTime();
+                theirTime = theirObj["ts"].timestamp();
             }
             else {
                 // theirTime < ourTime
@@ -360,7 +361,7 @@ namespace {
                     log() << "  ourTime:   " << ourTime.toStringLong();
                     throw RSFatalException("RS101 reached beginning of local oplog [2]");
                 }
-                ourTime = ourObj["ts"]._opTime();
+                ourTime = ourObj["ts"].timestamp();
             }
         }
     }
@@ -418,7 +419,7 @@ namespace {
                     goodVersions.push_back(pair<DocID, BSONObj>(doc,good));
                 }
             }
-            newMinValid = oplogreader->getLastOp(rsoplog);
+            newMinValid = oplogreader->getLastOp(rsOplogName);
             if (newMinValid.isEmpty()) {
                 error() << "rollback error newMinValid empty?";
                 return;
@@ -448,7 +449,7 @@ namespace {
 
         // we have items we are writing that aren't from a point-in-time.  thus best not to come
         // online until we get to that point in freshness.
-        OpTime minValid = newMinValid["ts"]._opTime();
+        Timestamp minValid = newMinValid["ts"].timestamp();
         log() << "minvalid=" << minValid.toStringLong();
         setMinValid(txn, minValid);
 
@@ -493,12 +494,12 @@ namespace {
 
             string err;
             try {
-                newMinValid = oplogreader->getLastOp(rsoplog);
+                newMinValid = oplogreader->getLastOp(rsOplogName);
                 if (newMinValid.isEmpty()) {
                     err = "can't get minvalid from sync source";
                 }
                 else {
-                    OpTime minValid = newMinValid["ts"]._opTime();
+                    Timestamp minValid = newMinValid["ts"].timestamp();
                     log() << "minvalid=" << minValid.toStringLong();
                     setMinValid(txn, minValid);
                 }
@@ -539,10 +540,10 @@ namespace {
         }
 
         log() << "rollback 4.7";
-        Client::Context ctx(txn, rsoplog);
-        Collection* oplogCollection = ctx.db()->getCollection(rsoplog);
+        OldClientContext ctx(txn, rsOplogName);
+        Collection* oplogCollection = ctx.db()->getCollection(rsOplogName);
         uassert(13423,
-                str::stream() << "replSet error in rollback can't find " << rsoplog,
+                str::stream() << "replSet error in rollback can't find " << rsOplogName,
                 oplogCollection);
 
         map<string,shared_ptr<Helpers::RemoveSaver> > removeSavers;
@@ -575,7 +576,7 @@ namespace {
                     removeSaver.reset(new Helpers::RemoveSaver("rollback", "", doc.ns));
 
                 // todo: lots of overhead in context, this can be faster
-                Client::Context ctx(txn, doc.ns);
+                OldClientContext ctx(txn, doc.ns);
 
                 // Add the doc to our rollback file
                 BSONObj obj;
@@ -584,7 +585,8 @@ namespace {
                     removeSaver->goingToDelete(obj);
                 }
                 else {
-                    error() << "rollback cannot find object by id";
+                    error() << "rollback cannot find object: " << pattern
+                            << " in namespace " << doc.ns;
                 }
 
                 if (it->second.isEmpty()) {
@@ -805,13 +807,13 @@ namespace {
 } // namespace
 
     void syncRollback(OperationContext* txn,
-                      OpTime lastOpTimeApplied,
+                      Timestamp lastOpTimeApplied,
                       OplogReader* oplogreader, 
                       ReplicationCoordinator* replCoord) {
         // check that we are at minvalid, otherwise we cannot rollback as we may be in an
         // inconsistent state
         {
-            OpTime minvalid = getMinValid(txn);
+            Timestamp minvalid = getMinValid(txn);
             if( minvalid > lastOpTimeApplied ) {
                 severe() << "need to rollback, but in inconsistent state" << endl;
                 log() << "minvalid: " << minvalid.toString() << " our last optime: "

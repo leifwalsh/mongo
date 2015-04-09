@@ -53,16 +53,20 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/cloner.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/op_observer.h"
+#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/query/internal_plans.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/handshake_args.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/sync.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/storage_options.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/exit.h"
@@ -115,8 +119,9 @@ namespace repl {
         uassert( 10119 ,  "only source='main' allowed for now with replication", sourceName() == "main" );
         BSONElement e = o.getField("syncedTo");
         if ( !e.eoo() ) {
-            uassert( 10120 ,  "bad sources 'syncedTo' field value", e.type() == Date || e.type() == Timestamp );
-            OpTime tmp( e.date() );
+            uassert(10120, "bad sources 'syncedTo' field value",
+                    e.type() == Date || e.type() == bsonTimestamp);
+            Timestamp tmp( e.date() );
             syncedTo = tmp;
         }
 
@@ -152,7 +157,7 @@ namespace repl {
         if ( !only.empty() )
             b.append("only", only);
         if ( !syncedTo.isNull() )
-            b.appendTimestamp("syncedTo", syncedTo.asDate());
+            b.append("syncedTo", syncedTo);
 
         BSONObjBuilder dbsNextPassBuilder;
         int n = 0;
@@ -214,7 +219,7 @@ namespace repl {
         {
             OpDebug debug;
 
-            Client::Context ctx(txn, "local.sources");
+            OldClientContext ctx(txn, "local.sources");
 
             const NamespaceString requestNs("local.sources");
             UpdateRequest request(requestNs);
@@ -253,7 +258,7 @@ namespace repl {
     */
     void ReplSource::loadAll(OperationContext* txn, SourceVector &v) {
         const char* localSources = "local.sources";
-        Client::Context ctx(txn, localSources);
+        OldClientContext ctx(txn, localSources);
         SourceVector old = v;
         v.clear();
 
@@ -320,7 +325,7 @@ namespace repl {
                 DBDirectClient c(txn);
                 BSONObj op = c.findOne( "local.oplog.$main", QUERY( "op" << NE << "n" ).sort( BSON( "$natural" << -1 ) ) );
                 if ( !op.isEmpty() ) {
-                    tmp.syncedTo = op[ "ts" ].date();
+                    tmp.syncedTo = op[ "ts" ].timestamp();
                 }
             }
             addSourceToList(txn, v, tmp, old);
@@ -378,7 +383,7 @@ namespace repl {
                 return appendCommandStatus(result, status);
             }
 
-            txn->getClient()->setRemoteID(handshake.getRid());
+            ReplClientInfo::forClient(txn->getClient()).setRemoteID(handshake.getRid());
 
             status = getGlobalReplicationCoordinator()->processHandshake(txn, handshake);
             return appendCommandStatus(result, status);
@@ -395,7 +400,7 @@ namespace repl {
         BSONObj res;
         bool ok = conn->runCommand( "admin" , cmd.obj() , res );
         // ignoring for now on purpose for older versions
-        LOG( ok ? 1 : 0 ) << "replHandshake res not: " << ok << " res: " << res << endl;
+        LOG( ok ? 1 : 0 ) << "replHandshake result: " << res << endl;
         return true;
     }
 
@@ -449,14 +454,14 @@ namespace repl {
                 }
             }
         }
-        syncedTo = OpTime();
+        syncedTo = Timestamp();
         addDbNextPass.clear();
         save(txn);
     }
 
     void ReplSource::resyncDrop( OperationContext* txn, const string& db ) {
         log() << "resync: dropping database " << db;
-        Client::Context ctx(txn, db);
+        OldClientContext ctx(txn, db);
         dropDatabase(txn, ctx.db());
     }
 
@@ -508,13 +513,13 @@ namespace repl {
     
     static DatabaseIgnorer ___databaseIgnorer;
     
-    void DatabaseIgnorer::doIgnoreUntilAfter( const string &db, const OpTime &futureOplogTime ) {
+    void DatabaseIgnorer::doIgnoreUntilAfter( const string &db, const Timestamp &futureOplogTime ) {
         if ( futureOplogTime > _ignores[ db ] ) {
             _ignores[ db ] = futureOplogTime;   
         }
     }
 
-    bool DatabaseIgnorer::ignoreAt( const string &db, const OpTime &currentOplogTime ) {
+    bool DatabaseIgnorer::ignoreAt( const string &db, const Timestamp &currentOplogTime ) {
         if ( _ignores[ db ].isNull() ) {
             return false;
         }
@@ -537,7 +542,8 @@ namespace repl {
             return true;   
         }
         BSONElement ts = op.getField( "ts" );
-        if ( ( ts.type() == Date || ts.type() == Timestamp ) && ___databaseIgnorer.ignoreAt( db, ts.date() ) ) {
+        if ( ( ts.type() == Date || ts.type() == bsonTimestamp )
+             && ___databaseIgnorer.ignoreAt( db, ts.timestamp() ) ) {
             // Database is ignored due to a previous indication that it is
             // missing from master after optime "ts".
             return false;   
@@ -547,7 +553,7 @@ namespace repl {
             return true;
         }
         
-        OpTime lastTime;
+        Timestamp lastTime;
         bool dbOk = false;
         {
             // This is always a GlobalWrite lock (so no ns/db used from the context)
@@ -560,9 +566,10 @@ namespace repl {
             
             BSONObj last = oplogReader.findOne( this->ns().c_str(), Query().sort( BSON( "$natural" << -1 ) ) );
             if ( !last.isEmpty() ) {
-	            BSONElement ts = last.getField( "ts" );
-	            massert( 14032, "Invalid 'ts' in remote log", ts.type() == Date || ts.type() == Timestamp );
-	            lastTime = OpTime( ts.date() );
+                    BSONElement ts = last.getField( "ts" );
+                    massert(14032, "Invalid 'ts' in remote log",
+                            ts.type() == Date || ts.type() == bsonTimestamp);
+	            lastTime = Timestamp( ts.date() );
             }
 
             BSONObj info;
@@ -606,7 +613,7 @@ namespace repl {
             incompleteCloneDbs.erase(*i);
             addDbNextPass.erase(*i);
 
-            Client::Context ctx(txn, *i);
+            OldClientContext ctx(txn, *i);
             dropDatabase(txn, ctx.db());
         }
         
@@ -617,13 +624,13 @@ namespace repl {
 
     void ReplSource::applyOperation(OperationContext* txn, Database* db, const BSONObj& op) {
         try {
-            bool failedUpdate = applyOperation_inlock( txn, db, op );
-            if (failedUpdate) {
+            Status status = applyOperation_inlock( txn, db, op );
+            if (!status.isOK()) {
                 Sync sync(hostName);
                 if (sync.shouldRetry(txn, op)) {
                     uassert(15914,
                             "Failure retrying initial sync update",
-                            !applyOperation_inlock(txn, db, op));
+                            applyOperation_inlock(txn, db, op).isOK());
                 }
             }
         }
@@ -724,7 +731,7 @@ namespace repl {
         // This code executes on the slaves only, so it doesn't need to be sharding-aware since
         // mongos will not send requests there. That's why the last argument is false (do not do
         // version checking).
-        Client::Context ctx(txn, ns, false);
+        OldClientContext ctx(txn, ns, false);
         txn->getCurOp()->reset();
 
         bool empty = !ctx.db()->getDatabaseCatalogEntry()->hasUserData();
@@ -755,7 +762,7 @@ namespace repl {
                     log() << "An earlier initial clone of '" << clientName << "' did not complete, now resyncing." << endl;
                 }
                 save(txn);
-                Client::Context ctx(txn, ns);
+                OldClientContext ctx(txn, ns);
                 nClonedThisPass++;
                 resync(txn, ctx.db()->name());
                 addDbNextPass.erase(clientName);
@@ -778,8 +785,9 @@ namespace repl {
         BSONObj last = oplogReader.findOne( _ns.c_str(), Query( b.done() ).sort( BSON( "$natural" << -1 ) ) );
         if ( !last.isEmpty() ) {
             BSONElement ts = last.getField( "ts" );
-            massert( 10386 ,  "non Date ts found: " + last.toString(), ts.type() == Date || ts.type() == Timestamp );
-            syncedTo = OpTime( ts.date() );
+            massert(10386, "non Date ts found: " + last.toString(),
+                    ts.type() == Date || ts.type() == bsonTimestamp);
+            syncedTo = Timestamp( ts.date() );
         }
     }
 
@@ -874,7 +882,7 @@ namespace repl {
             }
 
             BSONObjBuilder gte;
-            gte.appendTimestamp("$gte", syncedTo.asDate());
+            gte.append("$gte", syncedTo);
             BSONObjBuilder query;
             query.append("ts", gte.done());
             if ( !only.empty() ) {
@@ -927,11 +935,11 @@ namespace repl {
             return okResultCode;
         }
 
-        OpTime nextOpTime;
+        Timestamp nextOpTime;
         {
             BSONObj op = oplogReader.next();
             BSONElement ts = op.getField("ts");
-            if ( ts.type() != Date && ts.type() != Timestamp ) {
+            if ( ts.type() != Date && ts.type() != bsonTimestamp ) {
                 string err = op.getStringField("$err");
                 if ( !err.empty() ) {
                     // 13051 is "tailable cursor requested on non capped collection"
@@ -950,7 +958,7 @@ namespace repl {
                 }
             }
 
-            nextOpTime = OpTime( ts.date() );
+            nextOpTime = Timestamp( ts.date() );
             LOG(2) << "first op time received: " << nextOpTime.toString() << '\n';
             if ( initial ) {
                 LOG(1) << "initial run\n";
@@ -963,7 +971,7 @@ namespace repl {
                     verify(false);
                 }
                 oplogReader.putBack( op ); // op will be processed in the loop below
-                nextOpTime = OpTime(); // will reread the op below
+                nextOpTime = Timestamp(); // will reread the op below
             }
             else if ( nextOpTime != syncedTo ) { // didn't get what we queried for - error
                 log()
@@ -1029,15 +1037,15 @@ namespace repl {
                 while( 1 ) {
 
                     BSONElement ts = op.getField("ts");
-                    if( !( ts.type() == Date || ts.type() == Timestamp ) ) {
+                    if( !( ts.type() == Date || ts.type() == bsonTimestamp ) ) {
                         log() << "sync error: problem querying remote oplog record" << endl;
                         log() << "op: " << op.toString() << endl;
                         log() << "halting replication" << endl;
                         replInfo = replAllDead = "sync error: no ts found querying remote oplog record";
                         throw SyncException();
                     }
-                    OpTime last = nextOpTime;
-                    nextOpTime = OpTime( ts.date() );
+                    Timestamp last = nextOpTime;
+                    nextOpTime = Timestamp( ts.date() );
                     if ( !( last < nextOpTime ) ) {
                         log() << "sync error: last applied optime at slave >= nextOpTime from master" << endl;
                         log() << " last:       " << last.toStringLong() << endl;
@@ -1281,7 +1289,7 @@ namespace repl {
 
                 try {
                     WriteUnitOfWork wuow(&txn);
-                    logKeepalive(&txn);
+                    getGlobalServiceContext()->getOpObserver()->onOpMessage(&txn, BSONObj());
                     wuow.commit();
                 }
                 catch (...) {
@@ -1325,8 +1333,6 @@ namespace repl {
     }
 
     void startMasterSlave(OperationContext* txn) {
-
-        oldRepl();
 
         const ReplSettings& replSettings = getGlobalReplicationCoordinator()->getSettings();
         if( !replSettings.slave && !replSettings.master )
@@ -1388,7 +1394,7 @@ namespace repl {
                     BSONObjBuilder b;
                     b.append(_id);
                     BSONObj result;
-                    Client::Context ctx(&txn, ns);
+                    OldClientContext ctx(&txn, ns);
                     if( Helpers::findById(&txn, ctx.db(), ns, b.done(), result) )
                         _dummy_z += result.objsize(); // touch
                 }

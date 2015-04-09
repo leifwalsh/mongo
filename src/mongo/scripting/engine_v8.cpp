@@ -36,7 +36,7 @@
 #include <iostream>
 
 #include "mongo/base/init.h"
-#include "mongo/db/global_environment_experiment.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/scripting/v8_db.h"
@@ -351,7 +351,6 @@ namespace mongo {
      }
 
      V8ScriptEngine::V8ScriptEngine() :
-         _globalInterruptLock("GlobalV8InterruptLock"),
          _opToScopeMap(),
          _deadlineMonitor() {
      }
@@ -363,8 +362,8 @@ namespace mongo {
          if (!globalScriptEngine) {
              globalScriptEngine = new V8ScriptEngine();
 
-             if (hasGlobalEnvironment()) {
-                 getGlobalEnvironment()->registerKillOpListener(globalScriptEngine);
+             if (hasGlobalServiceContext()) {
+                 getGlobalServiceContext()->registerKillOpListener(globalScriptEngine);
              }
          }
      }
@@ -374,7 +373,7 @@ namespace mongo {
      }
 
      void V8ScriptEngine::interrupt(unsigned opId) {
-         mongo::mutex::scoped_lock intLock(_globalInterruptLock);
+         boost::lock_guard<boost::mutex> intLock(_globalInterruptLock);
          OpIdToScopeMap::iterator iScope = _opToScopeMap.find(opId);
          if (iScope == _opToScopeMap.end()) {
              // got interrupt request for a scope that no longer exists
@@ -387,7 +386,7 @@ namespace mongo {
      }
 
      void V8ScriptEngine::interruptAll() {
-         mongo::mutex::scoped_lock interruptLock(_globalInterruptLock);
+         boost::lock_guard<boost::mutex> interruptLock(_globalInterruptLock);
          for (OpIdToScopeMap::iterator iScope = _opToScopeMap.begin();
               iScope != _opToScopeMap.end(); ++iScope) {
              iScope->second->kill();
@@ -395,7 +394,7 @@ namespace mongo {
      }
 
      void V8Scope::registerOperation(OperationContext* txn) {
-         scoped_lock giLock(_engine->_globalInterruptLock);
+         boost::lock_guard<boost::mutex> giLock(_engine->_globalInterruptLock);
          invariant(_opId == 0);
          _opId = txn->getOpID();
          _engine->_opToScopeMap[_opId] = this;
@@ -407,7 +406,7 @@ namespace mongo {
      }
 
      void V8Scope::unregisterOperation() {
-         scoped_lock giLock(_engine->_globalInterruptLock);
+         boost::lock_guard<boost::mutex> giLock(_engine->_globalInterruptLock);
          LOG(2) << "V8Scope " << static_cast<const void*>(this) << " unregistered for op " << _opId << endl;
         if (_opId != 0) {
             // scope is currently associated with an operation id
@@ -420,7 +419,7 @@ namespace mongo {
 
     bool V8Scope::nativePrologue() {
         v8::Locker l(_isolate);
-        mongo::mutex::scoped_lock cbEnterLock(_interruptLock);
+        boost::lock_guard<boost::mutex> cbEnterLock(_interruptLock);
         if (v8::V8::IsExecutionTerminating(_isolate)) {
             LOG(2) << "v8 execution interrupted.  isolate: " << static_cast<const void*>(_isolate) << endl;
             return false;
@@ -437,7 +436,7 @@ namespace mongo {
 
     bool V8Scope::nativeEpilogue() {
         v8::Locker l(_isolate);
-        mongo::mutex::scoped_lock cbLeaveLock(_interruptLock);
+        boost::lock_guard<boost::mutex> cbLeaveLock(_interruptLock);
         _inNativeExecution = false;
         if (v8::V8::IsExecutionTerminating(_isolate)) {
             LOG(2) << "v8 execution interrupted.  isolate: " << static_cast<const void*>(_isolate) << endl;
@@ -452,7 +451,7 @@ namespace mongo {
     }
 
     void V8Scope::kill() {
-        mongo::mutex::scoped_lock interruptLock(_interruptLock);
+        boost::lock_guard<boost::mutex> interruptLock(_interruptLock);
         if (!_inNativeExecution) {
             // Set the TERMINATE flag on the stack guard for this isolate.
             // This won't happen between calls to nativePrologue and nativeEpilogue().
@@ -492,7 +491,6 @@ namespace mongo {
         : _engine(engine),
           _connectState(NOT),
           _cpuProfiler(),
-          _interruptLock("ScopeInterruptLock"),
           _inNativeExecution(true),
           _pendingKill(false),
           _opId(0),
@@ -1471,7 +1469,7 @@ namespace mongo {
             argv[1] = v8::String::New(ss.str().c_str());
             return BinDataFT()->GetFunction()->NewInstance(2, argv);
         }
-        case mongo::Timestamp: {
+        case mongo::bsonTimestamp: {
             v8::TryCatch tryCatch;
 
             argv[0] = v8::Number::New(elem.timestampTime() / 1000);
@@ -1563,11 +1561,11 @@ namespace mongo {
 
         verify(BinDataFT()->HasInstance(obj));
         verify(obj->InternalFieldCount() == 1);
-        int len = obj->Get(strLitToV8("len"))->ToInt32()->Value();
+        std::string binData(base64::decode(toSTLString(obj->GetInternalField(0))));
         b.appendBinData(elementName,
-                        len,
+                        binData.size(),
                         mongo::BinDataType(obj->Get(strLitToV8("type"))->ToInt32()->Value()),
-                        base64::decode(toSTLString(obj->GetInternalField(0))).c_str());
+                        binData.c_str());
     }
 
     OID V8Scope::v8ToMongoObjectID(v8::Handle<v8::Object> obj) {
@@ -1604,8 +1602,8 @@ namespace mongo {
         } else if (BinDataFT()->HasInstance(value)) {
             v8ToMongoBinData(b, elementName, obj);
         } else if (TimestampFT()->HasInstance(value)) {
-            OpTime ot (obj->Get(strLitToV8("t"))->Uint32Value(),
-                       obj->Get(strLitToV8("i"))->Uint32Value());
+            Timestamp ot (obj->Get(strLitToV8("t"))->Uint32Value(),
+                          obj->Get(strLitToV8("i"))->Uint32Value());
             b.append(elementName, ot);
         } else if (MinKeyFT()->HasInstance(value)) {
             b.appendMinKey(elementName);

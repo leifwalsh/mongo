@@ -37,9 +37,12 @@
 #include "mongo/base/owned_pointer_map.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/db/write_concern_options.h"
-#include "mongo/s/chunk.h"
+#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/chunk_manager.h"
 #include "mongo/s/cluster_write.h"
 #include "mongo/s/config.h"
 #include "mongo/s/config_server_checker_service.h"
@@ -48,7 +51,6 @@
 #include "mongo/s/server.h"
 #include "mongo/s/shard.h"
 #include "mongo/s/type_actionlog.h"
-#include "mongo/s/type_chunk.h"
 #include "mongo/s/type_collection.h"
 #include "mongo/s/type_mongos.h"
 #include "mongo/s/type_settings.h"
@@ -73,9 +75,14 @@ namespace mongo {
 
     Balancer balancer;
 
-    Balancer::Balancer() : _balancedLastTime(0), _policy( new BalancerPolicy() ) {}
+    Balancer::Balancer()
+        : _balancedLastTime(0),
+          _policy(new BalancerPolicy()) {
+
+    }
 
     Balancer::~Balancer() {
+
     }
 
     int Balancer::_moveChunks(const vector<CandidateChunkPtr>* candidateChunks,
@@ -179,16 +186,17 @@ namespace mongo {
         return movedCount;
     }
 
-    void Balancer::_ping( bool waiting ) {
-        clusterUpdate( MongosType::ConfigNS,
-                       BSON( MongosType::name( _myid )),
-                       BSON( "$set" << BSON( MongosType::ping(jsTime()) <<
-                                             MongosType::up(static_cast<int>(time(0)-_started)) <<
-                                             MongosType::waiting(waiting) <<
-                                             MongosType::mongoVersion(versionString) )),
-                       true, // upsert
-                       false, // multi
-                       NULL );
+    void Balancer::_ping(bool waiting) {
+        grid.catalogManager()->update(
+                        MongosType::ConfigNS,
+                        BSON(MongosType::name(_myid)),
+                        BSON("$set" << BSON(MongosType::ping(jsTime()) <<
+                                            MongosType::up(static_cast<int>(time(0) - _started)) <<
+                                            MongosType::waiting(waiting) <<
+                                            MongosType::mongoVersion(versionString))),
+                        true,
+                        false,
+                        NULL);
     }
 
      /* 
@@ -261,7 +269,9 @@ namespace mongo {
                 createActionlog = true;
             }
 
-            Status result = clusterInsert(ActionLogType::ConfigNS, actionLog.toBSON(), NULL);
+            Status result = grid.catalogManager()->insert(ActionLogType::ConfigNS,
+                                                          actionLog.toBSON(),
+                                                          NULL);
             if ( !result.isOK() ) {
                 log() << "Error encountered while logging action from balancer "
                       << result.reason();
@@ -404,13 +414,14 @@ namespace mongo {
             while ( cursor->more() ) {
                 BSONObj chunkDoc = cursor->nextSafe().getOwned();
 
-                auto_ptr<ChunkType> chunk(new ChunkType());
-                string errmsg;
-                if (!chunk->parseBSON(chunkDoc, &errmsg)) {
+                StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(chunkDoc);
+                if (!chunkRes.isOK()) {
                     error() << "bad chunk format for " << chunkDoc
-                            << ": " << errmsg << endl;
+                            << ": " << chunkRes.getStatus().reason();
                     return;
                 }
+                auto_ptr<ChunkType> chunk(new ChunkType());
+                chunkRes.getValue().cloneTo(chunk.get());
 
                 allChunkMinimums.insert(chunk->getMin().getOwned());
                 OwnedPointerVector<ChunkType>*& chunkList =
@@ -563,7 +574,6 @@ namespace mongo {
         // getConnectioString and dist lock constructor does not throw, which is what we expect on while
         // on the balancer thread
         ConnectionString config = configServer.getConnectionString();
-        DistributedLock balanceLock( config , "balancer" );
 
         while ( ! inShutdown() ) {
 
@@ -615,9 +625,12 @@ namespace mongo {
                 uassert( 13258 , "oids broken after resetting!" , _checkOIDs() );
 
                 {
-                    dist_lock_try lk( &balanceLock , "doing balance round" );
-                    if ( ! lk.got() ) {
-                        LOG(1) << "skipping balancing round because another balancer is active" << endl;
+                    ScopedDistributedLock balancerLock(config, "balancer");
+                    balancerLock.setLockMessage("doing balance round");
+
+                    Status lockStatus = balancerLock.tryAcquire();
+                    if (!lockStatus.isOK()) {
+                        LOG(1) << "skipping balancing round" << causedBy(lockStatus);
 
                         // Ping again so scripts can determine if we're active without waiting
                         _ping( true );

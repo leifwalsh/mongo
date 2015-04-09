@@ -38,8 +38,8 @@
 #include <string>
 #include <vector>
 
-#include "mongo/bson/mutable/document.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/mutable/document.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -47,11 +47,12 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/client.h"
-#include "mongo/db/get_status_from_command_result.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/s/write_ops/wc_error_detail.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/get_status_from_command_result.h"
 
 namespace mongo {
 
@@ -261,6 +262,15 @@ namespace mongo {
         }
     }
 
+    void Command::appendCommandWCStatus(BSONObjBuilder& result, const Status& status) {
+        if (!status.isOK()) {
+            WCErrorDetail wcError;
+            wcError.setErrCode(status.code());
+            wcError.setErrMessage(status.reason());
+            result.append("writeConcernError", wcError.toBSON());
+        }
+    }
+
     Status Command::getStatusFromCommandResult(const BSONObj& result) {
         return mongo::getStatusFromCommandResult(result);
     }
@@ -315,6 +325,17 @@ namespace mongo {
         cursorObj.append("id", cursorId);
         cursorObj.append("ns", cursorNamespace);
         cursorObj.append("firstBatch", firstBatch);
+        cursorObj.done();
+    }
+
+    void Command::appendGetMoreResponseObject(long long cursorId,
+                                              StringData cursorNamespace,
+                                              BSONArray nextBatch,
+                                              BSONObjBuilder* builder) {
+        BSONObjBuilder cursorObj(builder->subobjStart("cursor"));
+        cursorObj.append("id", cursorId);
+        cursorObj.append("ns", cursorNamespace);
+        cursorObj.append("nextBatch", nextBatch);
         cursorObj.done();
     }
 

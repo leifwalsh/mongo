@@ -33,13 +33,13 @@
 #include "mongo/db/repl/initial_sync.h"
 
 #include "mongo/db/operation_context_impl.h"
-#include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/replset_commands.h"
 #include "mongo/util/log.h"
 
 
 namespace mongo {
 namespace repl {
+
+    unsigned replSetForceInitialSyncFailure = 0;
 
     InitialSync::InitialSync(BackgroundSyncInterface *q) : 
         SyncTail(q, multiInitialSyncApply) {}
@@ -48,7 +48,7 @@ namespace repl {
 
     /* initial oplog application, during initial sync, after cloning.
     */
-    void InitialSync::oplogApplication(OperationContext* txn, const OpTime& endOpTime) {
+    void InitialSync::oplogApplication(OperationContext* txn, const Timestamp& endOpTime) {
         if (replSetForceInitialSyncFailure > 0) {
             log() << "test code invoked, forced InitialSync failure: "
                   << replSetForceInitialSyncFailure;

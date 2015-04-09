@@ -49,12 +49,8 @@ namespace mongo {
         const ClusterWriterStats& getStats();
 
     private:
-
-        void configWrite(const BatchedCommandRequest& request, BatchedCommandResponse* response);
-        void shardWrite(const BatchedCommandRequest& request, BatchedCommandResponse* response);
-
-        bool _autoSplit;
-        int _timeoutMillis;
+        const bool _autoSplit;
+        const int _timeoutMillis;
 
         boost::scoped_ptr<ClusterWriterStats> _stats;
     };
@@ -75,37 +71,6 @@ namespace mongo {
 
         boost::scoped_ptr<BatchWriteExecStats> _shardStats;
     };
-
-    /**
-     * Used only for writes to the config server, config and admin databases.
-     *
-     * Note: response can be NULL if you don't care about the write statistics.
-     */
-    Status clusterInsert( const std::string& ns,
-                          const BSONObj& doc,
-                          BatchedCommandResponse* response );
-
-    /**
-     * Used only for writes to the config server, config and admin databases.
-     *
-     * Note: response can be NULL if you don't care about the write statistics.
-     */
-    Status clusterUpdate( const std::string& ns,
-                          const BSONObj& query,
-                          const BSONObj& update,
-                          bool upsert,
-                          bool multi,
-                          BatchedCommandResponse* response );
-
-    /**
-     * Used only for writes to the config server, config and admin databases.
-     *
-     * Note: response can be NULL if you don't care about the write statistics.
-     */
-    Status clusterDelete( const std::string& ns,
-                          const BSONObj& query,
-                          int limit,
-                          BatchedCommandResponse* response );
 
     /**
      * Used only for writes to the config server, config and admin databases.

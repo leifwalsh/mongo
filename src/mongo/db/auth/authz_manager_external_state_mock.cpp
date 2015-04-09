@@ -35,12 +35,14 @@
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/mutable/element.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authz_session_external_state_mock.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/ops/update_driver.h"
 #include "mongo/platform/unordered_set.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/map_util.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -98,6 +100,13 @@ namespace {
                                               version)),
                           true,
                           BSONObj()));
+    }
+
+    std::unique_ptr<AuthzSessionExternalState>
+    AuthzManagerExternalStateMock::makeAuthzSessionExternalState(
+            AuthorizationManager* authzManager) {
+
+        return stdx::make_unique<AuthzSessionExternalStateMock>(authzManager);
     }
 
     Status AuthzManagerExternalStateMock::findOne(
@@ -159,7 +168,6 @@ namespace {
                     "i",
                     collectionName.ns().c_str(),
                     toInsert,
-                    NULL,
                     NULL);
         }
 
@@ -200,8 +208,7 @@ namespace {
                         "u",
                         collectionName.ns().c_str(),
                         logObj,
-                        &idQuery,
-                        NULL);
+                        &idQuery);
             }
 
             return Status::OK();
@@ -256,7 +263,6 @@ namespace {
                         "d",
                         collectionName.ns().c_str(),
                         idQuery,
-                        NULL,
                         NULL);
             }
 

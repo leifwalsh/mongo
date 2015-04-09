@@ -32,7 +32,7 @@
 
 #include "mongo/db/concurrency/lock_state.h"
 
-#include "mongo/db/global_environment_experiment.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/platform/compiler.h"
 #include "mongo/util/concurrency/synchronization.h"
@@ -501,8 +501,6 @@ namespace {
         lockerInfo->locks.clear();
         lockerInfo->waitingResource = ResourceId();
         lockerInfo->stats.reset();
-
-        if (!isLocked()) return;
 
         _lock.lock();
         LockRequestsMap::ConstIterator it = _requests.begin();

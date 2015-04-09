@@ -39,6 +39,7 @@
 #include "mongo/bson/mutable/element.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/config.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
@@ -399,7 +400,7 @@ namespace mongo {
                                "\"createUser\" command requires a \"roles\" array"));
             }
 
-#ifdef MONGO_SSL
+#ifdef MONGO_CONFIG_SSL
             if (args.userName.getDB() == "$external" &&
                 getSSLManager() &&
                 getSSLManager()->getSSLConfiguration()

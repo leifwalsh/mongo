@@ -46,7 +46,6 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
-#include "mongo/client/export_macros.h"
 
 namespace mongo {
 
@@ -58,7 +57,7 @@ namespace mongo {
     /** Utility for creating a BSONObj.
         See also the BSON() and BSON_ARRAY() macros.
     */
-    class MONGO_CLIENT_API BSONObjBuilder : boost::noncopyable {
+    class BSONObjBuilder : boost::noncopyable {
     public:
         /** @param initsize this is just a hint as to the final size of the object */
         BSONObjBuilder(int initsize=512)
@@ -68,10 +67,13 @@ namespace mongo {
             , _s(this)
             , _tracker(0)
             , _doneCalled(false) {
-            // Reserve space for a holder object at the beginning of the buffer, followed by
+            // Skip over space for a holder object at the beginning of the buffer, followed by
             // space for the object length. The length is filled in by _done.
             _b.skip(sizeof(BSONObj::Holder));
             _b.skip(sizeof(int));
+
+            // Reserve space for the EOO byte. This means _done() can't fail.
+            _b.reserveBytes(1);
         }
 
         /** @param baseBuilder construct a BSONObjBuilder using an existing BufBuilder
@@ -84,9 +86,13 @@ namespace mongo {
             , _s(this)
             , _tracker(0)
             , _doneCalled(false) {
-            // Reserve space for the object length, which is filled in by _done. We don't need a holder
-            // since we are a sub-builder, and some parent builder has already made the reservation.
+            // Skip over space for the object length, which is filled in by _done. We don't need a
+            // holder since we are a sub-builder, and some parent builder has already made the
+            // reservation.
             _b.skip(sizeof(int));
+
+            // Reserve space for the EOO byte. This means _done() can't fail.
+            _b.reserveBytes(1);
         }
 
         BSONObjBuilder( const BSONSizeTracker & tracker )
@@ -99,6 +105,9 @@ namespace mongo {
             // See the comments in the first constructor for details.
             _b.skip(sizeof(BSONObj::Holder));
             _b.skip(sizeof(int));
+
+            // Reserve space for the EOO byte. This means _done() can't fail.
+            _b.reserveBytes(1);
         }
 
         ~BSONObjBuilder() {
@@ -449,40 +458,23 @@ namespace mongo {
             return *this;
         }
 
-        // Append a Timestamp field -- will be updated to next OpTime on db insert.
-        BSONObjBuilder& appendTimestamp( StringData fieldName ) {
-            _b.appendNum( (char) Timestamp );
-            _b.appendStr( fieldName );
-            _b.appendNum( (unsigned long long) 0 );
+        /**
+         * To store a Timestamp in BSON, use this function.
+         * This captures both the secs and inc fields.
+         */
+        inline BSONObjBuilder& append(StringData fieldName, Timestamp ts) {
+            ts.append(_b, fieldName);
             return *this;
         }
 
-        /**
-         * To store an OpTime in BSON, use this function.
-         * This captures both the secs and inc fields.
-         */
-        BSONObjBuilder& append(StringData fieldName, OpTime optime);
-
-        /**
-         * Alternative way to store an OpTime in BSON. Pass the OpTime as a Date, as follows:
-         *
-         *     builder.appendTimestamp("field", optime.asDate());
-         *
-         * This captures both the secs and inc fields.
-         */
-        BSONObjBuilder& appendTimestamp( StringData fieldName , unsigned long long val ) {
-            _b.appendNum( (char) Timestamp );
-            _b.appendStr( fieldName );
-            _b.appendNum( val );
-            return *this;
+        // Append a Timestamp field -- will be updated to next server Timestamp
+        inline BSONObjBuilder& appendTimestamp(StringData fieldName) {
+            return append(fieldName, Timestamp());
         }
 
-        /**
-        Timestamps are a special BSON datatype that is used internally for replication.
-        Append a timestamp element to the object being ebuilt.
-        @param time - in millis (but stored in seconds)
-        */
-        BSONObjBuilder& appendTimestamp( StringData fieldName , unsigned long long time , unsigned int inc );
+        inline BSONObjBuilder& appendTimestamp(StringData fieldName, unsigned long long val) {
+            return append(fieldName, Timestamp(val));
+        }
 
         /*
         Append an element of the deprecated DBRef type.
@@ -622,6 +614,7 @@ namespace mongo {
         BSONObj asTempObj() {
             BSONObj temp(_done());
             _b.setlen(_b.len()-1); //next append should overwrite the EOO
+            _b.reserveBytes(1); // Rereserve room for the real EOO
             _doneCalled = false;
             return temp;
         }
@@ -703,8 +696,14 @@ namespace mongo {
                 return _b.buf() + _offset;
 
             _doneCalled = true;
+
+            // TODO remove this or find some way to prevent it from failing. Since this is intended
+            // for use with BSON() literal queries, it is less likely to result in oversized BSON.
             _s.endField();
+
+            _b.claimReservedBytes(1); // Prevents adding EOO from failing.
             _b.appendNum((char) EOO);
+
             char *data = _b.buf() + _offset;
             int size = _b.len() - _offset;
             DataView(data).writeLE(size);
@@ -779,11 +778,6 @@ namespace mongo {
         // These two just use next position
         BufBuilder &subobjStart() { return _b.subobjStart( num() ); }
         BufBuilder &subarrayStart() { return _b.subarrayStart( num() ); }
-
-        BSONArrayBuilder& appendTimestamp(unsigned int sec, unsigned int inc) {
-            _b.appendTimestamp(num(), sec, inc);
-            return *this;
-        }
 
         BSONArrayBuilder& appendRegex(StringData regex, StringData options = "") {
             _b.appendRegex(num(), regex, options);
@@ -917,5 +911,49 @@ namespace mongo {
     { return BSON( "$or" << BSON_ARRAY(a << b << c << d << e) ); }
     inline BSONObj OR(const BSONObj& a, const BSONObj& b, const BSONObj& c, const BSONObj& d, const BSONObj& e, const BSONObj& f)
     { return BSON( "$or" << BSON_ARRAY(a << b << c << d << e << f) ); }
+
+    inline BSONObjBuilder& BSONObjBuilderValueStream::operator<<(const DateNowLabeler& id) {
+        _builder->appendDate(_fieldName, jsTime());
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+    inline BSONObjBuilder& BSONObjBuilderValueStream::operator<<(const NullLabeler& id) {
+        _builder->appendNull(_fieldName);
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+    inline BSONObjBuilder& BSONObjBuilderValueStream::operator<<(const UndefinedLabeler& id) {
+        _builder->appendUndefined(_fieldName);
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+
+    inline BSONObjBuilder& BSONObjBuilderValueStream::operator<<(const MinKeyLabeler& id) {
+        _builder->appendMinKey(_fieldName);
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+    inline BSONObjBuilder& BSONObjBuilderValueStream::operator<<(const MaxKeyLabeler& id) {
+        _builder->appendMaxKey(_fieldName);
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+    template<class T> inline
+    BSONObjBuilder& BSONObjBuilderValueStream::operator<<( T value ) {
+        _builder->append(_fieldName, value);
+        _fieldName = StringData();
+        return *_builder;
+    }
+
+    template<class T>
+    BSONObjBuilder& Labeler::operator<<( T value ) {
+        s_->subobj()->append( l_.l_, value );
+        return *s_->_builder;
+    }
 
 }

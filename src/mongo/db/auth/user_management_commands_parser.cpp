@@ -33,7 +33,6 @@
 
 #include "mongo/base/status.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/client/auth_helpers.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/privilege.h"
@@ -327,14 +326,15 @@ namespace auth {
         return Status::OK();
     }
 
-    Status parseAndValidateDropAllUsersFromDatabaseCommand(const BSONObj& cmdObj,
-                                                           const std::string& dbname,
-                                                           BSONObj* parsedWriteConcern) {
+    Status parseFromDatabaseCommand(const BSONObj& cmdObj,
+                                    const std::string& dbname,
+                                    BSONObj* parsedWriteConcern,
+                                    std::string command) {
         unordered_set<std::string> validFieldNames;
-        validFieldNames.insert("dropAllUsersFromDatabase");
+        validFieldNames.insert(command);
         validFieldNames.insert("writeConcern");
 
-        Status status = _checkNoExtraFields(cmdObj, "dropAllUsersFromDatabase", validFieldNames);
+        Status status = _checkNoExtraFields(cmdObj, command, validFieldNames);
         if (!status.isOK()) {
             return status;
         }
@@ -345,6 +345,11 @@ namespace auth {
         }
 
         return Status::OK();
+    }
+    Status parseAndValidateDropAllUsersFromDatabaseCommand(const BSONObj& cmdObj,
+                                                           const std::string& dbname,
+                                                           BSONObj* parsedWriteConcern) {
+        return parseFromDatabaseCommand(cmdObj, dbname, parsedWriteConcern, "dropAllUsersFromDatabase");
     }
 
     Status parseUsersInfoCommand(const BSONObj& cmdObj,
@@ -628,21 +633,7 @@ namespace auth {
     Status parseDropAllRolesFromDatabaseCommand(const BSONObj& cmdObj,
                                                 const std::string& dbname,
                                                 BSONObj* parsedWriteConcern) {
-        unordered_set<std::string> validFieldNames;
-        validFieldNames.insert("dropAllRolesFromDatabase");
-        validFieldNames.insert("writeConcern");
-
-        Status status = _checkNoExtraFields(cmdObj, "dropAllRolesFromDatabase", validFieldNames);
-        if (!status.isOK()) {
-            return status;
-        }
-
-        status = _extractWriteConcern(cmdObj, parsedWriteConcern);
-        if (!status.isOK()) {
-            return status;
-        }
-
-        return Status::OK();
+        return parseFromDatabaseCommand(cmdObj, dbname, parsedWriteConcern, "dropAllRolesFromDatabase");
     }
 
     Status parseMergeAuthzCollectionsCommand(const BSONObj& cmdObj,

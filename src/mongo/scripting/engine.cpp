@@ -41,7 +41,7 @@
 
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/client/dbclientinterface.h"
-#include "mongo/db/global_environment_experiment.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/util/file.h"
@@ -315,10 +315,8 @@ namespace {
 namespace {
     class ScopeCache {
     public:
-        ScopeCache() : _mutex("ScopeCache") {}
-
         void release(const string& poolName, const boost::shared_ptr<Scope>& scope) {
-            scoped_lock lk(_mutex);
+            boost::lock_guard<boost::mutex> lk(_mutex);
 
             if (scope->hasOutOfMemoryException()) {
                 // make some room
@@ -344,7 +342,7 @@ namespace {
         }
 
         boost::shared_ptr<Scope> tryAcquire(OperationContext* txn, const string& poolName) {
-            scoped_lock lk(_mutex);
+            boost::lock_guard<boost::mutex> lk(_mutex);
 
             for (Pools::iterator it = _pools.begin(); it != _pools.end(); ++it) {
                 if (it->poolName == poolName) {

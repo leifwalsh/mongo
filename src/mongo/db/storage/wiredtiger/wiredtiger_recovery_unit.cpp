@@ -56,14 +56,14 @@ namespace mongo {
             }
 
             void syncHappend() {
-                boost::mutex::scoped_lock lk( mutex );
+                boost::lock_guard<boost::mutex> lk( mutex );
                 lastSyncTime++;
                 condvar.notify_all();
             }
 
             // return true if happened
             bool awaitCommit() {
-                boost::mutex::scoped_lock lk( mutex );
+                boost::unique_lock<boost::mutex> lk( mutex );
                 long long start = lastSyncTime;
                 numWaitingForSync.fetchAndAdd(1);
                 condvar.timed_wait(lk,boost::posix_time::milliseconds(50));
@@ -137,7 +137,9 @@ namespace mongo {
 
             for (Changes::const_reverse_iterator it = _changes.rbegin(), end = _changes.rend();
                     it != end; ++it) {
-                (*it)->rollback();
+                Change* change = *it;
+                LOG(2) << "CUSTOM ROLLBACK " << demangleName(typeid(*change));
+                change->rollback();
             }
             _changes.clear();
 
@@ -212,9 +214,10 @@ namespace mongo {
     }
 
     void WiredTigerRecoveryUnit::commitAndRestart() {
-        invariant( _depth == 0 );
-        if ( _active ) {
-            _txnClose( true );
+        invariant(_depth == 0);
+        if (_active) {
+            // Can't be in a WriteUnitOfWork, so safe to rollback
+            _txnClose(false);
         }
     }
 

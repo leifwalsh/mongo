@@ -30,6 +30,7 @@
 #include <cstring>
 #include <type_traits>
 
+#include "mongo/config.h"
 #include "mongo/platform/endian.h"
 
 namespace mongo {
@@ -49,7 +50,7 @@ namespace mongo {
 
         template<typename T>
         const ConstDataView& readNative(T* t, size_t offset = 0) const {
-#if MONGO_HAVE_STD_IS_TRIVIALLY_COPYABLE
+#if MONGO_CONFIG_HAVE_STD_IS_TRIVIALLY_COPYABLE
             static_assert(std::is_trivially_copyable<T>::value,
                           "Type for DataView::readNative must be trivially copyable");
 #endif
@@ -95,7 +96,7 @@ namespace mongo {
 
         template<typename T>
         DataView& writeNative(const T& value, std::size_t offset = 0) {
-#if MONGO_HAVE_STD_IS_TRIVIALLY_COPYABLE
+#if MONGO_CONFIG_HAVE_STD_IS_TRIVIALLY_COPYABLE
             static_assert(std::is_trivially_copyable<T>::value,
                           "Type for DataView::writeNative must be trivially copyable");
 #endif

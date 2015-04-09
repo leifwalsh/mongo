@@ -16,11 +16,19 @@ env.Library('rslog',
             ])
 
 env.Library(
-    'network_interface_impl',
-    'network_interface_impl.cpp',
+    target='network_interface_impl',
+    source=[
+        'network_interface_impl.cpp',
+        'network_interface_impl_downconvert_find_getmore.cpp',
+    ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base/base',
-        '$BUILD_DIR/mongo/clientdriver'
+        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/clientdriver',
+        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/db/common',
+        '$BUILD_DIR/mongo/db/query/getmore_request',
+        '$BUILD_DIR/mongo/db/query/lite_parsed_query',
         ])
 
 env.Library('replication_executor',
@@ -72,18 +80,20 @@ env.Library('repl_coordinator_impl',
                 'check_quorum_for_config_change.cpp',
                 'elect_cmd_runner.cpp',
                 'freshness_checker.cpp',
+                'repl_client_info.cpp',
+                'replica_set_config_checks.cpp',
                 'replication_coordinator_impl.cpp',
                 'replication_coordinator_impl_elect.cpp',
                 'replication_coordinator_impl_heartbeat.cpp',
-                'replica_set_config_checks.cpp',
             ],
-            LIBDEPS=['$BUILD_DIR/mongo/db/common',
+            LIBDEPS=[
+                     '$BUILD_DIR/mongo/db/common',
                      '$BUILD_DIR/mongo/db/index/index_descriptor',
                      '$BUILD_DIR/mongo/fail_point',
-                     '$BUILD_DIR/mongo/foundation',
-                     '$BUILD_DIR/mongo/global_environment_experiment',
-                     '$BUILD_DIR/mongo/global_optime',
+                     '$BUILD_DIR/mongo/global_timestamp',
                      '$BUILD_DIR/mongo/server_options_core',
+                     '$BUILD_DIR/mongo/service_context',
+                     '$BUILD_DIR/mongo/util/net/command_status',
                      'repl_coordinator_interface',
                      'replica_set_messages',
                      'replication_executor',
@@ -153,8 +163,7 @@ env.CppUnitTest('repl_coordinator_impl_reconfig_test',
 
 env.Library('repl_coordinator_interface',
             ['replication_coordinator.cpp',
-             'replication_coordinator_external_state.cpp',
-             'repl_set_seed_list.cpp'],
+             'replication_coordinator_external_state.cpp'],
             LIBDEPS=[
                 '$BUILD_DIR/mongo/hostandport',
             ])
@@ -210,5 +219,28 @@ env.CppUnitTest('isself_test',
                     '$BUILD_DIR/mongo/serveronly',
                     '$BUILD_DIR/mongo/coreserver',
                     '$BUILD_DIR/mongo/coredb',
+                    "$BUILD_DIR/mongo/ntservice_mock",
                 ],
                 NO_CRUTCH = True)
+
+env.Library(
+    target='fetcher',
+    source=[
+        'fetcher.cpp',
+    ],
+    LIBDEPS=[
+        'replication_executor',
+        '$BUILD_DIR/mongo/logger/logger',
+        '$BUILD_DIR/mongo/namespace_string',
+        '$BUILD_DIR/mongo/util/net/command_status',
+    ],
+)
+
+env.CppUnitTest(
+    target='fetcher_test',
+    source='fetcher_test.cpp',
+    LIBDEPS=[
+        'fetcher',
+        'replmocks',
+    ],
+)

@@ -41,7 +41,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/write_concern_options.h"
-#include "mongo/s/range_arithmetic.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/concurrency/synchronization.h"
 #include "mongo/util/time_support.h"
@@ -72,13 +71,12 @@ namespace mongo {
      *   RangeDeleter* deleter = new RangeDeleter(new ...);
      *   deleter->startWorkers();
      *   ...
-     *   getGlobalEnvironment()->killAllOperations(); // stop all deletes
+     *   getGlobalServiceContext()->killAllOperations(); // stop all deletes
      *   deleter->stopWorkers();
      *   delete deleter;
      */
     class RangeDeleter {
         MONGO_DISALLOW_COPYING(RangeDeleter);
-
     public:
 
         /**

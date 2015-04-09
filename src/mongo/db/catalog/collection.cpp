@@ -330,7 +330,8 @@ namespace mongo {
             IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator( txn, true );
             while ( ii.more() ) {
                 IndexDescriptor* descriptor = ii.next();
-                IndexAccessMethod* iam = _indexCatalog.getIndex( descriptor );
+                IndexCatalogEntry* entry = ii.catalogEntry(descriptor);
+                IndexAccessMethod* iam = ii.accessMethod( descriptor );
 
                 InsertDeleteOptions options;
                 options.logIfError = false;
@@ -344,7 +345,8 @@ namespace mongo {
                                                  objNew,
                                                  oldLocation,
                                                  options,
-                                                 updateTicket);
+                                                 updateTicket,
+                                                 entry->getFilterExpression());
                 if ( !ret.isOK() ) {
                     return StatusWith<RecordId>( ret );
                 }
@@ -395,7 +397,7 @@ namespace mongo {
             IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator( txn, true );
             while ( ii.more() ) {
                 IndexDescriptor* descriptor = ii.next();
-                IndexAccessMethod* iam = _indexCatalog.getIndex( descriptor );
+                IndexAccessMethod* iam = ii.accessMethod(descriptor);
 
                 int64_t updatedKeys;
                 Status ret = iam->update(
@@ -434,6 +436,7 @@ namespace mongo {
                                                   const Snapshotted<RecordData>& oldRec,
                                                   const char* damageSource,
                                                   const mutablebson::DamageVector& damages ) {
+
         dassert(txn->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
         invariant(oldRec.snapshotId() == txn->recoveryUnit()->getSnapshotId());
 
@@ -599,6 +602,14 @@ namespace mongo {
                     iam->validate(txn, full, &keys, bob.get());
                     indexes.appendNumber(descriptor->indexNamespace(),
                                          static_cast<long long>(keys));
+
+                    if (bob) {
+                        BSONObj obj = bob->done();
+                        BSONElement valid = obj["valid"];
+                        if (valid.ok() && !valid.trueValue()) {
+                            results->valid = false;
+                        }
+                    }
                     idxn++;
                 }
 

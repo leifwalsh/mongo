@@ -30,6 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/s/strategy.h"
+
 #include <boost/scoped_ptr.hpp>
 
 #include "mongo/base/status.h"
@@ -48,13 +50,13 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/s/bson_serializable.h"
 #include "mongo/s/chunk_manager_targeter.h"
+#include "mongo/s/client/dbclient_multi_command.h"
 #include "mongo/s/client_info.h"
 #include "mongo/s/cluster_write.h"
-#include "mongo/s/chunk.h"
+#include "mongo/s/chunk_manager.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/cursors.h"
 #include "mongo/s/dbclient_shard_resolver.h"
-#include "mongo/s/dbclient_multi_command.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request.h"
 #include "mongo/s/stale_exception.h"
@@ -328,6 +330,7 @@ namespace mongo {
         }
     }
 
+    // TODO: remove after MongoDB 3.2
     bool Strategy::handleSpecialNamespaces( Request& r , QueryMessage& q ) {
         const char * ns = strstr( r.getns() , ".$cmd.sys." );
         if ( ! ns )
@@ -383,40 +386,18 @@ namespace mongo {
             arr.done();
         }
         else if ( strcmp( ns , "killop" ) == 0 ) {
-            const bool isAuthorized = authSession->isAuthorizedForActionsOnResource(
-                    ResourcePattern::forClusterResource(), ActionType::killop);
-            audit::logKillOpAuthzCheck(
-                    client,
-                    q.query,
-                    isAuthorized ? ErrorCodes::OK : ErrorCodes::Unauthorized);
-            uassert(ErrorCodes::Unauthorized, "not authorized to run killop", isAuthorized);
+            BSONObjBuilder cmdBob;
+            cmdBob.append("killOp", 1);
+            cmdBob.appendElements(q.query); // fields are validated by ClusterKillOpCommand
+            auto interposedCmd = cmdBob.done();
 
-            BSONElement e = q.query["op"];
-            if ( e.type() != String ) {
-                b.append( "err" , "bad op" );
-                b.append( e );
-            }
-            else {
-                b.append( e );
-                string s = e.String();
-                string::size_type i = s.find( ':' );
-                if ( i == string::npos ) {
-                    b.append( "err" , "bad opid" );
-                }
-                else {
-                    string shard = s.substr( 0 , i );
-                    int opid = atoi( s.substr( i + 1 ).c_str() );
-                    b.append( "shard" , shard );
-                    b.append( "shardid" , opid );
+            NamespaceString nss(r.getns());
+            NamespaceString interposedNss(nss.db(), "$cmd");
 
-                    log() << "want to kill op: " << e << endl;
-                    Shard s(shard);
-
-                    ScopedDbConnection conn(s.getConnString());
-                    conn->findOne( r.getns() , BSON( "op" << opid ) );
-                    conn.done();
-                }
-            }
+            Command::runAgainstRegistered(interposedNss.ns().c_str(),
+                                          interposedCmd,
+                                          b,
+                                          q.queryOptions);
         }
         else if ( strcmp( ns , "unlock" ) == 0 ) {
             b.append( "err" , "can't do unlock through mongos" );

@@ -36,16 +36,20 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/exec/update.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/projection.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
+#include "mongo/db/projection.h"
 #include "mongo/db/query/get_executor.h"
-#include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/write_concern.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -113,6 +117,13 @@ namespace mongo {
                 return false;
             }
 
+            StatusWith<WriteConcernOptions> wcResult = extractWriteConcern(cmdObj);
+            if (!wcResult.isOK()) {
+                return appendCommandStatus(result, wcResult.getStatus());
+            }
+            txn->setWriteConcern(wcResult.getValue());
+            setupSynchronousCommit(txn);
+
             bool ok = false;
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
                 errmsg = "";
@@ -136,7 +147,7 @@ namespace mongo {
                 // Take X lock so we can create collection, then re-run operation.
                 ScopedTransaction transaction(txn, MODE_IX);
                 Lock::DBLock lk(txn->lockState(), dbname, MODE_X);
-                Client::Context ctx(txn, ns, false /* don't check version */);
+                OldClientContext ctx(txn, ns, false /* don't check version */);
                 if (!fromRepl &&
                     !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                     return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -173,6 +184,13 @@ namespace mongo {
                              result,
                              errmsg);
             }
+
+            WriteConcernResult res;
+            wcResult = waitForWriteConcern(
+                    txn,
+                    repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
+                    &res);
+            appendCommandWCStatus(result, wcResult.getStatus());
 
             return ok;
         }
@@ -212,7 +230,7 @@ namespace mongo {
 
             AutoGetOrCreateDb autoDb(txn, dbname, MODE_IX);
             Lock::CollectionLock collLock(txn->lockState(), ns, MODE_IX);
-            Client::Context ctx(txn, ns, autoDb.getDb(), autoDb.justCreated());
+            OldClientContext ctx(txn, ns, autoDb.getDb(), autoDb.justCreated());
 
             if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbname)) {
                 return appendCommandStatus(result, Status(ErrorCodes::NotMaster, str::stream()
@@ -372,6 +390,14 @@ namespace mongo {
                 if ( found ) {
                     deleteObjects(txn, ctx.db(), ns, queryModified, PlanExecutor::YIELD_MANUAL,
                                   true, true);
+
+                    // Committing the WUOW can close the current snapshot. Until this happens, the
+                    // snapshot id should not have changed.
+                    invariant(txn->recoveryUnit()->getSnapshotId() == snapshotDoc.snapshotId());
+
+                    // Must commit the write before doing anything that could throw.
+                    wuow.commit();
+
                     BSONObjBuilder le( result.subobjStart( "lastErrorObject" ) );
                     le.appendNumber( "n" , 1 );
                     le.done();
@@ -422,7 +448,12 @@ namespace mongo {
 
                         // This is the last thing we do before the WriteUnitOfWork commits (except
                         // for some BSON manipulation).
-                        repl::logOp(txn, "i", collection->ns().ns().c_str(), newDoc);
+                        getGlobalServiceContext()->getOpObserver()->onInsert(txn,
+                                                                          collection->ns().ns(),
+                                                                          newDoc); 
+
+                        // Must commit the write and logOp() before doing anything that could throw.
+                        wuow.commit();
 
                         // The third argument indicates whether or not we have something for the
                         // 'value' field returned by a findAndModify command.
@@ -470,6 +501,13 @@ namespace mongo {
                     invariant(res.existing);
                     LOG(3) << "update result: "  << res;
 
+                    // Committing the WUOW can close the current snapshot. Until this happens, the
+                    // snapshot id should not have changed.
+                    invariant(txn->recoveryUnit()->getSnapshotId() == snapshotDoc.snapshotId());
+
+                    // Must commit the write before doing anything that could throw.
+                    wuow.commit();
+
                     if (returnNew) {
                         dassert(!res.newObj.isEmpty());
                         _appendHelper(result, res.newObj, true, fields, whereCallback);
@@ -484,13 +522,6 @@ namespace mongo {
                     le.done();
                 }
             }
-
-            // Committing the WUOW can close the current snapshot. Until this happens, the
-            // snapshot id should not have changed.
-            if (found) {
-                invariant(txn->recoveryUnit()->getSnapshotId() == snapshotDoc.snapshotId());
-            }
-            wuow.commit();
 
             return true;
         }

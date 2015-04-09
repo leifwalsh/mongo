@@ -61,7 +61,7 @@ function runTest(s) {
     printjson(s.getDB("config").settings.find().toArray());
 
     print("restart mongos");
-    stopMongoProgram(31000);
+    MongoRunner.stopMongos(31000);
     var opts = { port : 31000, v : 2, configdb : s._configDB, keyFile : "jstests/libs/key1", chunkSize : 1 };
     var conn = startMongos( opts );
     s.s = s._mongos[0] = s["s0"] = conn;
@@ -294,11 +294,8 @@ function runTest(s) {
     assert.throws(function() {
         printjson(readOnlyDB.currentOp());
     });
-    assert.throws(function() {
-        printjson(readOnlyDB.killOp(123));
-    });
+    assert.commandFailed(readOnlyDB.killOp(123));
     // fsyncUnlock doesn't work in mongos anyway, so no need check authorization for it
-
     /*
     broken because of SERVER-4156
     print( "   testing write command (should fail)" );
@@ -316,9 +313,7 @@ function runTest(s) {
     assert.throws(function() {
         printjson(readOnlyDB.currentOp());
     });
-    assert.throws(function() {
-        printjson(readOnlyDB.killOp(123));
-    });
+    assert.commandFailed(readOnlyDB.killOp(123));
     // fsyncUnlock doesn't work in mongos anyway, so no need check authorization for it
 }
 
